@@ -15,6 +15,10 @@ struct CallView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    // ローカルビデオビューの位置管理
+    @State private var localVideoOffset = CGSize(width: 0, height: 0)
+    @State private var isDragging = false
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -113,35 +117,64 @@ struct CallView: View {
     }
 
     private var videoViews: some View {
-        ZStack(alignment: .topTrailing) {
-            // Remote video (full screen)
-            if let remoteTrack = webRTCService.getRemoteVideoTrack() {
-                VideoView(videoTrack: remoteTrack)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .overlay(
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.5)
-                                .tint(.white)
-                            Text("接続を待っています...")
-                                .foregroundColor(.white)
-                        }
-                    )
-            }
+        GeometryReader { geometry in
+            ZStack {
+                // Remote video (full screen)
+                if let remoteTrack = webRTCService.getRemoteVideoTrack() {
+                    VideoView(videoTrack: remoteTrack)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .overlay(
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .scaleEffect(1.5)
+                                    .tint(.white)
+                                Text("接続を待っています...")
+                                    .foregroundColor(.white)
+                            }
+                        )
+                }
 
-            // Local video (picture-in-picture)
-            if let localTrack = webRTCService.getLocalVideoTrack() {
-                VideoView(videoTrack: localTrack)
-                    .frame(width: 120, height: 160)
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.3), lineWidth: 2)
-                    )
-                    .padding(16)
+                // Local video (draggable picture-in-picture)
+                if let localTrack = webRTCService.getLocalVideoTrack() {
+                    VideoView(videoTrack: localTrack)
+                        .frame(width: 120, height: 160)
+                        .cornerRadius(12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.white.opacity(isDragging ? 0.8 : 0.3), lineWidth: isDragging ? 3 : 2)
+                        )
+                        .shadow(color: .black.opacity(0.3), radius: 8)
+                        .offset(x: localVideoOffset.width, y: localVideoOffset.height)
+                        .position(
+                            x: geometry.size.width - 60 - 16 + localVideoOffset.width,
+                            y: geometry.safeAreaInsets.top + 80 + 16 + localVideoOffset.height
+                        )
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    isDragging = true
+                                    localVideoOffset = value.translation
+                                }
+                                .onEnded { value in
+                                    isDragging = false
+                                    // スナップ処理: 画面の端に近づいたら吸着させる
+                                    let finalX = value.translation.width
+                                    let finalY = value.translation.height
+
+                                    // 画面の境界を計算
+                                    let maxX = geometry.size.width / 2 - 60 - 16
+                                    let maxY = geometry.size.height / 2 - 80 - 16
+
+                                    withAnimation(.spring()) {
+                                        localVideoOffset.width = min(max(finalX, -maxX), maxX)
+                                        localVideoOffset.height = min(max(finalY, -maxY), maxY)
+                                    }
+                                }
+                        )
+                }
             }
         }
     }
@@ -214,62 +247,84 @@ struct CallView: View {
     }
 
     private var callControls: some View {
-        HStack(spacing: 24) {
-            // Toggle Video
-            if callManager.isVideoCall {
+        GeometryReader { geometry in
+            let screenWidth = geometry.size.width
+            let isVeryCompact = screenWidth < 380  // iPhone SE, iPhone 12 mini
+            let isCompact = screenWidth < 400      // Standard iPhone
+
+            // Calculate button count
+            let videoButtonCount = callManager.isVideoCall ? 2 : 0  // Video + Camera
+            let totalButtons = 3 + videoButtonCount  // Mic, End, Speaker + Video buttons
+
+            // Dynamic sizing based on screen width and button count
+            let availableWidth = screenWidth - (isVeryCompact ? 24 : (isCompact ? 40 : 60))
+            let spacing: CGFloat = isVeryCompact ? 8 : (isCompact ? 12 : 20)
+            let endCallSize: CGFloat = isVeryCompact ? 56 : (isCompact ? 60 : 70)
+            let normalButtonSize: CGFloat = isVeryCompact ? 48 : (isCompact ? 52 : 60)
+
+            HStack(spacing: spacing) {
+                // Toggle Video
+                if callManager.isVideoCall {
+                    ControlButton(
+                        icon: webRTCService.isVideoEnabled ? "video.fill" : "video.slash.fill",
+                        color: webRTCService.isVideoEnabled ? .white : .red,
+                        size: normalButtonSize,
+                        action: {
+                            callManager.toggleVideo()
+                        }
+                    )
+                }
+
+                // Toggle Audio
                 ControlButton(
-                    icon: webRTCService.isVideoEnabled ? "video.fill" : "video.slash.fill",
-                    color: webRTCService.isVideoEnabled ? .white : .red,
+                    icon: webRTCService.isAudioEnabled ? "mic.fill" : "mic.slash.fill",
+                    color: webRTCService.isAudioEnabled ? .white : .red,
+                    size: normalButtonSize,
                     action: {
-                        callManager.toggleVideo()
+                        callManager.toggleMute()
                     }
                 )
-            }
 
-            // Toggle Audio
-            ControlButton(
-                icon: webRTCService.isAudioEnabled ? "mic.fill" : "mic.slash.fill",
-                color: webRTCService.isAudioEnabled ? .white : .red,
-                action: {
-                    callManager.toggleMute()
-                }
-            )
-
-            // End Call
-            ControlButton(
-                icon: "phone.down.fill",
-                color: .white,
-                backgroundColor: .red,
-                size: 70,
-                action: {
-                    Task {
-                        await callManager.endCall()
-                        dismiss()
-                    }
-                }
-            )
-
-            // Toggle Speaker
-            ControlButton(
-                icon: audioManager.currentDevice == .speaker ? "speaker.wave.3.fill" : "speaker.fill",
-                color: .white,
-                action: {
-                    audioManager.toggleSpeaker()
-                }
-            )
-
-            // Switch Camera
-            if callManager.isVideoCall {
+                // End Call
                 ControlButton(
-                    icon: "camera.rotate.fill",
+                    icon: "phone.down.fill",
                     color: .white,
+                    backgroundColor: .red,
+                    size: endCallSize,
                     action: {
-                        callManager.toggleCamera()
+                        Task {
+                            await callManager.endCall()
+                            dismiss()
+                        }
                     }
                 )
+
+                // Toggle Speaker
+                ControlButton(
+                    icon: audioManager.currentDevice == .speaker ? "speaker.wave.3.fill" : "speaker.fill",
+                    color: .white,
+                    size: normalButtonSize,
+                    action: {
+                        audioManager.toggleSpeaker()
+                    }
+                )
+
+                // Switch Camera
+                if callManager.isVideoCall {
+                    ControlButton(
+                        icon: "camera.rotate.fill",
+                        color: .white,
+                        size: normalButtonSize,
+                        action: {
+                            callManager.toggleCamera()
+                        }
+                    )
+                }
             }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, isVeryCompact ? 8 : (isCompact ? 12 : 20))
         }
-        .padding(.horizontal)
+        .frame(height: 80)
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

@@ -33,17 +33,20 @@ class SocketService: ObservableObject {
     func connect(userId: Int) {
         if manager != nil {
             print("⚠️ SocketService: Manager already exists, disconnecting first")
+            FileLogger.shared.log("⚠️ Manager already exists, disconnecting first", category: "SocketService")
             disconnect()
         }
 
         guard let url = URL(string: Constants.Server.socketURL) else {
             print("❌ SocketService: Invalid socket URL")
+            FileLogger.shared.log("❌ Invalid socket URL", category: "SocketService")
             return
         }
 
         print("🔵 SocketService: Connecting to \(url.absoluteString)")
         print("🔵 SocketService: User ID: \(userId)")
         print("🔵 SocketService: Path: /signal/socket.io/")
+        FileLogger.shared.log("Connecting to \(url.absoluteString) for user \(userId)", category: "SocketService")
 
         // Store userId for registration on connect/reconnect
         self.currentUserId = userId
@@ -62,6 +65,7 @@ class SocketService: ObservableObject {
 
         socket?.connect()
         print("🔵 SocketService: Connection initiated")
+        FileLogger.shared.log("Connection initiated", category: "SocketService")
     }
 
     func disconnect() {
@@ -79,22 +83,26 @@ class SocketService: ObservableObject {
     private func setupEventHandlers() {
         socket?.on(clientEvent: .connect) { [weak self] data, ack in
             print("✅ SocketService: Socket connected - \(data)")
+            FileLogger.shared.log("✅ Socket connected", category: "SocketService")
             self?.isConnected = true
 
             // Register user on every connect/reconnect
             if let userId = self?.currentUserId {
                 print("🔵 SocketService: Auto-registering user on connect")
+                FileLogger.shared.log("Auto-registering user \(userId) on connect", category: "SocketService")
                 self?.registerUser(userId: userId)
             }
         }
 
         socket?.on(clientEvent: .disconnect) { [weak self] data, ack in
             print("⚠️ SocketService: Socket disconnected - \(data)")
+            FileLogger.shared.log("⚠️ Socket disconnected", category: "SocketService")
             self?.isConnected = false
         }
 
         socket?.on(clientEvent: .error) { data, ack in
             print("❌ SocketService: Socket error - \(data)")
+            FileLogger.shared.log("❌ Socket error: \(data)", category: "SocketService")
         }
 
         socket?.on(clientEvent: .statusChange) { data, ack in
@@ -219,7 +227,7 @@ class SocketService: ObservableObject {
 
     // MARK: - Call Signaling
 
-    func sendOffer(to userId: Int, sdp: String) {
+    func sendOffer(to userId: Int, sdp: String, callId: String? = nil, hasVideo: Bool = true) {
         guard isConnected else {
             print("❌ SocketService: Cannot send offer - socket not connected")
             return
@@ -229,11 +237,20 @@ class SocketService: ObservableObject {
         let displayName = AuthService.shared.currentUser?.displayName ?? "Unknown"
 
         print("🔵 SocketService: Sending offer to \(userId)")
-        socket?.emit(Constants.SocketEvents.offer, [
+        var payload: [String: Any] = [
             "to": userId,
             "sdp": sdp,
-            "displayName": displayName
-        ])
+            "displayName": displayName,
+            "hasVideo": hasVideo
+        ]
+
+        // Add callId if provided (critical for VoIP Push)
+        if let callId = callId {
+            payload["callId"] = callId
+            print("🔵 SocketService: Including callId: \(callId)")
+        }
+
+        socket?.emit(Constants.SocketEvents.offer, payload)
         print("✅ SocketService: Offer sent")
     }
 

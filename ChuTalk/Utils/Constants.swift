@@ -8,11 +8,23 @@
 import Foundation
 
 struct Constants {
+    // App Store Review Mode (App Store審査用の安全機能を有効化)
+    // Set to true for App Store builds to enable v2 endpoints with blocking and content filtering
+    // IMPORTANT: Set to false until v2 endpoints are fully tested
+    static let isAppStoreReviewBuild = false  // Use v1 endpoints (original behavior)
+
     // Server Configuration
     struct Server {
+        #if DEBUG
+        // 開発・テスト環境（Debugビルド時）
+        static let baseURL = "https://chutalk.ksc-sys.com"  // または別のテストサーバー
+        #else
+        // 本番環境（Releaseビルド時）
         static let baseURL = "https://chutalk.ksc-sys.com"
+        #endif
+
         static let apiURL = "\(baseURL)/api"
-        static let socketURL = "https://chutalk.ksc-sys.com"
+        static let socketURL = baseURL
         static let socketPath = "/signal/socket.io/"
         static let stunServer = "stun:\(baseURL.replacingOccurrences(of: "https://", with: "")):3478"
         static let turnServer = "turn:\(baseURL.replacingOccurrences(of: "https://", with: "")):3478"
@@ -23,8 +35,11 @@ struct Constants {
         static let register = "\(Server.apiURL)/auth/register"
         static let login = "\(Server.apiURL)/auth/login"
         static let turnCredentials = "\(Server.apiURL)/turn-cred"
-        static let contacts = "\(Server.apiURL)/contacts"
-        static let messages = "\(Server.apiURL)/messages"
+
+        // v2 endpoints support blocking and content filtering for App Store compliance
+        static let contacts = "\(Server.apiURL)/contacts\(Constants.isAppStoreReviewBuild ? ".v2" : "")"
+        static let messages = "\(Server.apiURL)/messages\(Constants.isAppStoreReviewBuild ? ".v2" : "")"
+
         static let userSearch = "\(Server.apiURL)/users/search"
         static let calls = "\(Server.apiURL)/calls"
         static let callSignal = "\(Server.apiURL)/calls/signal"
@@ -57,6 +72,7 @@ struct Constants {
         static let userId = "com.chutalk.userId"
         static let username = "com.chutalk.username"
         static let displayName = "com.chutalk.displayName"
+        static let password = "com.chutalk.password"  // 自動再ログイン用
     }
 
     // UserDefaults Keys

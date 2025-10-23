@@ -28,6 +28,7 @@ struct CallHistoryView: View {
                 await loadCallHistory()
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle()) // iPadでもスタックスタイルを使用
         .task {
             await loadCallHistory()
         }
@@ -96,24 +97,33 @@ struct CallHistoryView: View {
         isLoading = true
         errorMessage = nil
 
-        // Note: Server doesn't have GET /api/calls endpoint yet, only POST
-        // For now, use empty history
-        await MainActor.run {
-            self.callHistory = []
-            self.isLoading = false
-        }
+        print("📞 CallHistoryView: Loading call history...")
 
-        /*
         do {
             let history = try await APIService.shared.getCallHistory()
+            print("📞 CallHistoryView: Received \(history.count) call history entries from API")
+
+            // Debug: Print raw history data
+            for (index, call) in history.enumerated() {
+                print("  [\(index)] ID: \(call.id), ContactID: \(call.contactId), Type: \(call.type), Time: \(call.timestamp)")
+            }
 
             // Populate contact names
             let contactsService = ContactsService.shared
             var enrichedHistory = history
 
             for index in enrichedHistory.indices {
-                if let contact = try? await contactsService.getContact(byId: enrichedHistory[index].contactId) {
+                // Get all contacts
+                let contacts = await contactsService.contacts
+                print("📞 CallHistoryView: Total contacts available: \(contacts.count)")
+
+                // Find contact by ID
+                if let contact = contacts.first(where: { $0.id == enrichedHistory[index].contactId }) {
                     enrichedHistory[index].contactName = contact.displayName
+                    print("  Found contact: \(contact.displayName) for ID \(enrichedHistory[index].contactId)")
+                } else {
+                    enrichedHistory[index].contactName = "Unknown"
+                    print("  ⚠️ No contact found for ID \(enrichedHistory[index].contactId)")
                 }
             }
 
@@ -121,8 +131,13 @@ struct CallHistoryView: View {
                 self.callHistory = enrichedHistory.sorted { $0.timestamp > $1.timestamp }
                 self.isLoading = false
             }
+
+            print("✅ CallHistoryView: Loaded \(enrichedHistory.count) call history entries")
         } catch {
-            print("⚠️ CallHistoryView: Failed to load history - \(error)")
+            print("❌ CallHistoryView: Failed to load history - \(error)")
+            if let apiError = error as? APIError {
+                print("❌ CallHistoryView: API Error: \(apiError.localizedDescription)")
+            }
             await MainActor.run {
                 // Set empty history instead of showing error
                 self.callHistory = []
@@ -130,7 +145,6 @@ struct CallHistoryView: View {
                 self.isLoading = false
             }
         }
-        */
     }
 }
 

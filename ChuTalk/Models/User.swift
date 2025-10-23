@@ -11,11 +11,13 @@ struct User: Codable, Identifiable, Equatable {
     let id: Int
     let username: String
     let displayName: String
+    let profileImageUrl: String?
 
     enum CodingKeys: String, CodingKey {
         case id
         case username
         case displayName = "display_name"
+        case profileImageUrl = "profile_image_url"
     }
 
     static func == (lhs: User, rhs: User) -> Bool {

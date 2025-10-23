@@ -121,13 +121,16 @@ extension VoIPPushService: PKPushRegistryDelegate {
                 return true  // デフォルトはビデオ通話
             }()
 
+            let offer = dict["offer"] as? String
+
             voipPayload = VoIPPayload(
                 type: "call.incoming",
                 callId: callId,
                 fromUserId: fromUserId,
                 fromDisplayName: displayName,
                 room: (dict["room"] as? String) ?? "",
-                hasVideo: hasVideo
+                hasVideo: hasVideo,
+                offer: offer
             )
 
             print("✅ VoIPPushService: Fallback payload created")
@@ -173,6 +176,7 @@ extension VoIPPushService: PKPushRegistryDelegate {
         print("   Caller: \(finalPayload.fromDisplayName)")
         print("   Caller ID: \(callerId)")
         print("   Has Video: \(finalPayload.hasVideo)")
+        print("   Offer in payload: \(finalPayload.offer != nil ? "YES (\(finalPayload.offer!.count) chars)" : "NO")")
 
         // iOS 13+ requires immediate CallKit report in same run loop
         CallKitProvider.shared.reportIncomingCall(
@@ -180,7 +184,8 @@ extension VoIPPushService: PKPushRegistryDelegate {
             handle: finalPayload.fromDisplayName,
             hasVideo: finalPayload.hasVideo,
             callId: finalPayload.callId,
-            callerId: callerId
+            callerId: callerId,
+            offer: finalPayload.offer
         ) { [weak self] in
             print("✅ VoIPPushService: CallKit report completed")
             self?.pendingCallIds.remove(finalPayload.callId)

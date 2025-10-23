@@ -27,6 +27,7 @@ class CallKitProvider: NSObject {
         let callerId: Int
         let callerName: String
         let hasVideo: Bool
+        let offer: String?
     }
 
     private override init() {
@@ -62,6 +63,7 @@ class CallKitProvider: NSObject {
         hasVideo: Bool,
         callId: String,
         callerId: Int,
+        offer: String? = nil,
         completion: @escaping () -> Void
     ) {
         print("📞 CallKitProvider: ========== REPORTING INCOMING CALL ==========")
@@ -70,14 +72,14 @@ class CallKitProvider: NSObject {
         print("   Has Video: \(hasVideo)")
         print("   Call ID: \(callId)")
         print("   Caller ID: \(callerId)")
+        print("   Offer: \(offer != nil ? "present (\(offer!.count) chars)" : "nil")")
 
-        // 重複チェック: 同じcallIdが既に報告されている場合はスキップ（デバッグ用に一時無効化）
+        // 重複チェック: 同じcallIdが既に報告されている場合はスキップ
         if let existingUUID = callIdToUUID[callId] {
             print("⚠️ CallKitProvider: Call ID \(callId) already reported with UUID \(existingUUID)")
-            print("⚠️ CallKitProvider: 【デバッグ】重複チェックを無視して続行")
-            // 一時的にコメントアウト
-            // completion()
-            // return
+            print("⚠️ CallKitProvider: Skipping duplicate incoming call notification")
+            completion()
+            return
         }
 
         // callIdとUUIDのマッピングを保存
@@ -88,7 +90,8 @@ class CallKitProvider: NSObject {
             callId: callId,
             callerId: callerId,
             callerName: handle,
-            hasVideo: hasVideo
+            hasVideo: hasVideo,
+            offer: offer
         )
         activeCallsInfo[uuid] = callInfo
 
@@ -141,7 +144,8 @@ class CallKitProvider: NSObject {
             callId: callId,
             callerId: contactId,
             callerName: contactName,
-            hasVideo: hasVideo
+            hasVideo: hasVideo,
+            offer: nil  // 発信側にはofferは不要
         )
         activeCallsInfo[uuid] = callInfo
 
@@ -236,22 +240,30 @@ extension CallKitProvider: CXProviderDelegate {
         print("   Call ID: \(callInfo.callId)")
         print("   Caller ID: \(callInfo.callerId)")
         print("   Caller Name: \(callInfo.callerName)")
+        print("   Offer: \(callInfo.offer != nil ? "present (\(callInfo.offer!.count) chars)" : "nil")")
 
         // オーディオセッション設定はdidActivate audioSessionで行う
         // ここでは設定しない（CallKitが自動的に設定する）
 
         // CallManagerに通知
         Task { @MainActor in
+            var userInfo: [String: Any] = [
+                "callUUID": action.callUUID.uuidString,
+                "callId": callInfo.callId,
+                "callerId": callInfo.callerId,
+                "callerName": callInfo.callerName,
+                "hasVideo": callInfo.hasVideo
+            ]
+
+            // offerがあれば追加
+            if let offer = callInfo.offer {
+                userInfo["offer"] = offer
+            }
+
             NotificationCenter.default.post(
                 name: .callKitAnswerCall,
                 object: nil,
-                userInfo: [
-                    "callUUID": action.callUUID.uuidString,
-                    "callId": callInfo.callId,
-                    "callerId": callInfo.callerId,
-                    "callerName": callInfo.callerName,
-                    "hasVideo": callInfo.hasVideo
-                ]
+                userInfo: userInfo
             )
         }
 
@@ -335,7 +347,12 @@ extension CallKitProvider: CXProviderDelegate {
                 mode: .voiceChat,
                 options: [.allowBluetooth, .defaultToSpeaker]
             )
-            print("✅ CallKitProvider: Audio session configured for WebRTC")
+
+            // 音量の安定性を改善するための設定
+            try audioSession.setPreferredIOBufferDuration(0.01) // 低遅延設定
+            try audioSession.setPreferredSampleRate(48000) // 高品質サンプルレート
+
+            print("✅ CallKitProvider: Audio session configured for WebRTC (buffer: 0.01s, rate: 48kHz)")
         } catch {
             print("❌ CallKitProvider: Failed to configure audio session - \(error)")
         }
@@ -360,8 +377,13 @@ extension CallKitProvider: CXProviderDelegate {
                 mode: .voiceChat,
                 options: [.allowBluetooth, .defaultToSpeaker]
             )
+
+            // 音量の安定性を改善するための設定
+            try audioSession.setPreferredIOBufferDuration(0.01)
+            try audioSession.setPreferredSampleRate(48000)
+
             try audioSession.setActive(true)
-            print("✅ CallKitProvider: Audio session configured")
+            print("✅ CallKitProvider: Audio session configured (buffer: 0.01s, rate: 48kHz)")
         } catch {
             print("❌ CallKitProvider: Audio session error - \(error)")
         }

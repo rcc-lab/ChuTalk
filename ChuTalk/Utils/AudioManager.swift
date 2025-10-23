@@ -48,6 +48,22 @@ class AudioManager: ObservableObject {
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        // Handle audio session interruptions (important for lock/unlock)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: nil
+        )
+
+        // Handle when audio session becomes active again
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil
+        )
     }
 
     @objc private func handleRouteChange(notification: Notification) {
@@ -65,13 +81,83 @@ class AudioManager: ObservableObject {
         }
     }
 
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        switch type {
+        case .began:
+            print("🔊 AudioManager: Audio session interrupted (began)")
+            FileLogger.shared.log("Audio session interrupted (began)", category: "AudioManager")
+        case .ended:
+            print("🔊 AudioManager: Audio session interruption ended")
+            FileLogger.shared.log("Audio session interruption ended", category: "AudioManager")
+
+            // Resume audio session after interruption
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    print("🔊 AudioManager: Resuming audio session after interruption")
+                    FileLogger.shared.log("Resuming audio session", category: "AudioManager")
+                    do {
+                        try audioSession.setActive(true, options: [])
+                        print("✅ AudioManager: Audio session resumed successfully")
+                        FileLogger.shared.log("✅ Audio session resumed", category: "AudioManager")
+                    } catch {
+                        print("❌ AudioManager: Failed to resume audio session: \(error)")
+                        FileLogger.shared.log("❌ Failed to resume: \(error)", category: "AudioManager")
+                    }
+                }
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    @objc private func handleMediaServicesReset() {
+        print("🔊 AudioManager: Media services were reset, reconfiguring...")
+        FileLogger.shared.log("Media services reset, reconfiguring", category: "AudioManager")
+        setupAudioSession()
+        configureForCall()
+    }
+
     func configureForCall() {
+        print("🔊 AudioManager: Configuring audio session for call...")
+        FileLogger.shared.log("🔊 Configuring audio session for call", category: "AudioManager")
         do {
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothA2DP, .defaultToSpeaker])
-            try audioSession.setActive(true)
+            // IMPORTANT: Use .mixWithOthers to allow audio to continue in background
+            // and during screen lock/unlock transitions
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [
+                    .allowBluetooth,
+                    .allowBluetoothA2DP,
+                    .defaultToSpeaker,
+                    .mixWithOthers  // Allow mixing with other audio and continue in background
+                ]
+            )
+            try audioSession.setActive(true, options: [])
+
+            // Set preferred sample rate for better quality
+            try audioSession.setPreferredSampleRate(48000)
+
+            // Set preferred I/O buffer duration for lower latency
+            try audioSession.setPreferredIOBufferDuration(0.005)
+
             updateCurrentDevice()
+            print("✅ AudioManager: Audio session configured successfully")
+            print("   Category: \(audioSession.category)")
+            print("   Mode: \(audioSession.mode)")
+            print("   Options: \(audioSession.categoryOptions)")
+            print("   Sample Rate: \(audioSession.sampleRate)")
+            FileLogger.shared.log("✅ Audio session configured - Category: \(audioSession.category.rawValue), Mode: \(audioSession.mode.rawValue)", category: "AudioManager")
         } catch {
-            print("Failed to configure audio for call: \(error.localizedDescription)")
+            print("❌ AudioManager: Failed to configure audio for call: \(error.localizedDescription)")
+            FileLogger.shared.log("❌ Failed to configure audio: \(error.localizedDescription)", category: "AudioManager")
         }
     }
 

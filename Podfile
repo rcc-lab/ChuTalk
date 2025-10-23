@@ -16,6 +16,10 @@ target 'ChuTalk' do
         config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
         # Exclude x86_64 for simulator (WebRTC only supports ARM64)
         config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'x86_64'
+        # Disable code signing for Pods
+        config.build_settings['CODE_SIGN_IDENTITY'] = ''
+        config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+        config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
       end
     end
 

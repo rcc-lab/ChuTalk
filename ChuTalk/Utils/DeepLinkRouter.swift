@@ -21,14 +21,36 @@ class DeepLinkRouter: ObservableObject {
 
     private init() {}
 
+    private var lastNotificationTime: Date?
+    private var lastNotificationUserInfo: String?
+
     func handleNotification(userInfo: [AnyHashable: Any]) {
-        print("🔗 DeepLinkRouter: Handling notification")
-        print("UserInfo: \(userInfo)")
+        print("🔗 DeepLinkRouter: ========== HANDLE NOTIFICATION START ==========")
+        print("🔗 DeepLinkRouter: Thread: \(Thread.current)")
+        print("🔗 DeepLinkRouter: Time: \(Date())")
+        print("🔗 DeepLinkRouter: UserInfo: \(userInfo)")
+
+        // 重複チェック: 1秒以内に同じ通知が来たら無視
+        let now = Date()
+        let userInfoString = "\(userInfo)"
+
+        if let lastTime = lastNotificationTime,
+           let lastInfo = lastNotificationUserInfo,
+           now.timeIntervalSince(lastTime) < 1.0,
+           lastInfo == userInfoString {
+            print("⚠️ DeepLinkRouter: DUPLICATE NOTIFICATION DETECTED - IGNORING")
+            return
+        }
+
+        lastNotificationTime = now
+        lastNotificationUserInfo = userInfoString
 
         guard let type = userInfo["type"] as? String else {
             print("⚠️ DeepLinkRouter: No type in userInfo")
             return
         }
+
+        print("🔗 DeepLinkRouter: Processing type: \(type)")
 
         switch type {
         case "chat.message":
@@ -40,6 +62,8 @@ class DeepLinkRouter: ObservableObject {
         default:
             print("⚠️ DeepLinkRouter: Unknown type: \(type)")
         }
+
+        print("🔗 DeepLinkRouter: ========== HANDLE NOTIFICATION END ==========")
     }
 
     private func handleChatMessage(userInfo: [AnyHashable: Any]) {

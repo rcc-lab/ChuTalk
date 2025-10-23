@@ -11,13 +11,15 @@ struct Contact: Codable, Identifiable, Equatable {
     let id: Int
     let username: String
     let displayName: String
+    let profileImageUrl: String?
     var isOnline: Bool
     var isFavorite: Bool
 
-    init(id: Int, username: String, displayName: String, isOnline: Bool = false, isFavorite: Bool = false) {
+    init(id: Int, username: String, displayName: String, profileImageUrl: String? = nil, isOnline: Bool = false, isFavorite: Bool = false) {
         self.id = id
         self.username = username
         self.displayName = displayName
+        self.profileImageUrl = profileImageUrl
         self.isOnline = isOnline
         self.isFavorite = isFavorite
     }
@@ -27,6 +29,7 @@ struct Contact: Codable, Identifiable, Equatable {
         id = try container.decode(Int.self, forKey: .id)
         username = try container.decode(String.self, forKey: .username)
         displayName = try container.decode(String.self, forKey: .displayName)
+        profileImageUrl = try container.decodeIfPresent(String.self, forKey: .profileImageUrl)
         isOnline = try container.decodeIfPresent(Bool.self, forKey: .isOnline) ?? false
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
     }
@@ -36,6 +39,7 @@ struct Contact: Codable, Identifiable, Equatable {
         try container.encode(id, forKey: .id)
         try container.encode(username, forKey: .username)
         try container.encode(displayName, forKey: .displayName)
+        try container.encodeIfPresent(profileImageUrl, forKey: .profileImageUrl)
         try container.encode(isOnline, forKey: .isOnline)
         try container.encode(isFavorite, forKey: .isFavorite)
     }
@@ -44,6 +48,7 @@ struct Contact: Codable, Identifiable, Equatable {
         case id
         case username
         case displayName = "display_name"
+        case profileImageUrl = "profile_image_url"
         case isOnline = "is_online"
         case isFavorite = "is_favorite"
     }

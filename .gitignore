@@ -94,3 +94,7 @@ Backups/
 *.backup
 *.bak
 *.old
+
+# macOS
+.DS_Store
+*.DS_Store

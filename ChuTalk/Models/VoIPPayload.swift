@@ -14,6 +14,7 @@ struct VoIPPayload {
     let fromDisplayName: String
     let room: String
     let hasVideo: Bool          // 追加
+    let offer: String?          // Offer SDP (optional)
 
     // 寛容なペイロードパース（Int/String混在に対応）
     static func parse(from dict: [AnyHashable: Any]) -> VoIPPayload? {
@@ -64,6 +65,9 @@ struct VoIPPayload {
         // hasVideo（デフォルトtrue）
         let hasVideo = bool("hasVideo") ?? true
 
+        // offer SDP（optional）
+        let offer = str("offer")
+
         print("✅ VoIPPayload: Successfully parsed")
         print("   type: \(type)")
         print("   callId: \(callId)")
@@ -71,6 +75,7 @@ struct VoIPPayload {
         print("   fromDisplayName: \(fromDisplayName)")
         print("   room: \(room)")
         print("   hasVideo: \(hasVideo)")
+        print("   offer: \(offer != nil ? "present (\(offer!.count) chars)" : "nil")")
 
         return VoIPPayload(
             type: type,
@@ -78,7 +83,8 @@ struct VoIPPayload {
             fromUserId: fromUserId,
             fromDisplayName: fromDisplayName,
             room: room,
-            hasVideo: hasVideo
+            hasVideo: hasVideo,
+            offer: offer
         )
     }
 }

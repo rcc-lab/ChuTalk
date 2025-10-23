@@ -83,8 +83,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             print("📨 AppDelegate: APS: \(aps)")
         }
 
-        // ディープリンク処理
-        DeepLinkRouter.shared.handleNotification(userInfo: userInfo)
+        // アプリが起動中(Active)の場合のみディープリンク処理を実行
+        // Background/Inactiveの場合は通知タップ時に処理される
+        if application.applicationState == .active {
+            print("📨 AppDelegate: App is active, handling notification immediately")
+            DeepLinkRouter.shared.handleNotification(userInfo: userInfo)
+        } else {
+            print("📨 AppDelegate: App is background/inactive, notification will be handled on tap")
+        }
 
         completionHandler(.newData)
     }

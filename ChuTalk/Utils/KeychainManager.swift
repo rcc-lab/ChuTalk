@@ -13,7 +13,11 @@ class KeychainManager {
 
     private let keychain = KeychainSwift()
 
-    private init() {}
+    private init() {
+        // VoIP Pushでデバイスロック時でもアクセス可能にする
+        keychain.accessGroup = nil
+        keychain.synchronizable = false
+    }
 
     enum KeychainError: Error {
         case saveFailed

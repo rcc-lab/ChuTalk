@@ -173,67 +173,14 @@ struct ContentView: View {
 
     private func handleCallKitAnswer(_ notification: Notification) {
         print("📞 ContentView: ========== CALLKIT ANSWER ==========")
+        print("✅ ContentView: CallManager handles all CallKit answer logic")
+        print("   (ContentView delegates to CallManager to avoid duplicate processing)")
 
-        // CallManagerが既にSocket.IO経由でOfferを処理している場合はスキップ
-        if callManager.incomingOffer != nil && callManager.currentContact != nil {
-            print("✅ ContentView: CallManager already has offer (Socket.IO), skipping API fetch")
-            return
-        }
-
-        // VoIP Push経由の着信の場合のみ、APIからOfferを取得
-        print("📞 ContentView: VoIP Push path - fetching offer from API...")
-
-        // 新しいCallKitProviderからの通知形式
-        guard let callUUIDString = notification.userInfo?["callUUID"] as? String,
-              let callUUID = UUID(uuidString: callUUIDString),
-              let callId = notification.userInfo?["callId"] as? String,
-              let callerId = notification.userInfo?["callerId"] as? Int,
-              let callerName = notification.userInfo?["callerName"] as? String,
-              let hasVideo = notification.userInfo?["hasVideo"] as? Bool else {
-            print("❌ ContentView: Missing required fields in CallKit answer notification")
-            return
-        }
-
-        print("   Call UUID: \(callUUID)")
-        print("   Call ID: \(callId)")
-        print("   Caller ID: \(callerId)")
-        print("   Caller Name: \(callerName)")
-
-        Task {
-            // 発信者の連絡先情報を取得
-            guard let contact = try? await ContactsService.shared.getContact(byId: callerId) else {
-                print("❌ ContentView: Failed to get contact for caller ID: \(callerId)")
-                return
-            }
-
-            // APIからofferシグナルのSDPを取得
-            print("📞 ContentView: Fetching offer SDP from API...")
-
-            do {
-                guard let sdp = try await APIService.shared.getOfferSDP(callId: callId) else {
-                    print("❌ ContentView: No offer SDP found")
-                    return
-                }
-
-                print("✅ ContentView: Found offer SDP (length: \(sdp.count))")
-
-                await MainActor.run {
-                    callManager.incomingCallerId = callerId
-                    callManager.incomingOffer = sdp
-                    callManager.currentContact = contact
-                    callManager.callId = callId
-                    callManager.callUUID = callUUID  // CallKit UUIDを設定
-                    callManager.isVideoCall = hasVideo
-                }
-
-                // 着信応答を実行
-                print("📞 ContentView: Calling CallManager.acceptIncomingCall()")
-                await callManager.acceptIncomingCall()
-
-            } catch {
-                print("❌ ContentView: Failed to get offer SDP - \(error)")
-            }
-        }
+        // CallManagerが全ての処理を行うため、ContentView側では何もしない
+        // これにより二重処理を防ぎ、以下の問題を解決：
+        // 1. acceptIncomingCall()が2回呼ばれる問題
+        // 2. hasVideo情報の競合
+        // 3. 1回目の通話接続失敗
     }
 
     private func handleCallKitEnd(_ notification: Notification) {

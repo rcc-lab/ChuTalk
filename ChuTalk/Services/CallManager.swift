@@ -8,6 +8,7 @@
 import Foundation
 import WebRTC
 import Combine
+import AVFoundation
 
 enum CallState {
     case idle
@@ -44,6 +45,7 @@ class CallManager: ObservableObject {
     private var incomingCallTimer: Timer?
     private var answerReceived: Bool = false  // answer重複処理を防ぐフラグ
     private var isSettingUpCall: Bool = false  // 通話セットアップ中フラグ（切断ループ防止）
+    private var ringbackTimer: Timer?  // 呼び出し音タイマー
 
     private let webRTCService = WebRTCService.shared
     private let socketService = SocketService.shared
@@ -67,6 +69,7 @@ class CallManager: ObservableObject {
 
     @objc private func handleCallKitAnswer(_ notification: Notification) {
         print("📞 CallManager: ========== RECEIVED CALLKIT ANSWER NOTIFICATION ==========")
+        FileLogger.shared.log("========== RECEIVED CALLKIT ANSWER NOTIFICATION ==========", category: "CallManager")
 
         guard let userInfo = notification.userInfo,
               let callUUID = userInfo["callUUID"] as? String,
@@ -75,8 +78,12 @@ class CallManager: ObservableObject {
               let callerName = userInfo["callerName"] as? String,
               let hasVideo = userInfo["hasVideo"] as? Bool else {
             print("❌ CallManager: Invalid notification userInfo")
+            FileLogger.shared.log("❌ Invalid notification userInfo", category: "CallManager")
             return
         }
+
+        // VoIP Push経由でofferが含まれている場合は取得
+        let offerFromPush = userInfo["offer"] as? String
 
         print("📞 CallManager: User accepted call via CallKit")
         print("   Call UUID: \(callUUID)")
@@ -84,24 +91,47 @@ class CallManager: ObservableObject {
         print("   Caller ID: \(callerId)")
         print("   Caller Name: \(callerName)")
         print("   Has Video: \(hasVideo)")
+        print("   Offer from Push: \(offerFromPush != nil ? "YES (\(offerFromPush!.count) chars)" : "NO")")
+
+        FileLogger.shared.log("User accepted call via CallKit - UUID:\(callUUID) ID:\(callId) Caller:\(callerId)(\(callerName)) Video:\(hasVideo) Offer:\(offerFromPush != nil ? "YES" : "NO")", category: "CallManager")
 
         Task { @MainActor in
             // CallManagerの状態を設定（VoIP Push経由の場合に必要）
             print("🔧 CallManager: Setting up state from CallKit notification...")
+            FileLogger.shared.log("Setting up state from CallKit notification", category: "CallManager")
+
+            // アプリ完全停止状態から起動した場合、サービスの初期化待機
+            print("⏳ CallManager: Waiting for services initialization (1 second)...")
+            FileLogger.shared.log("⏳ Waiting for services initialization (1 second)", category: "CallManager")
+
+            // Wait 1 second for services to fully initialize
+            // Camera will start asynchronously when CallKit audio session is activated
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            print("✅ CallManager: Initialization complete")
+            FileLogger.shared.log("✅ Initialization complete", category: "CallManager")
 
             self.callId = callId
             self.callUUID = UUID(uuidString: callUUID)
             self.isVideoCall = hasVideo
             self.callDirection = .incoming
+            self.callState = .connecting
+            self.showActiveCallView = true  // 🔑 通話画面を表示（VoIP Push経由で重要）
+
+            print("✅ CallManager: Set showActiveCallView = true")
+            print("✅ CallManager: Video mode: \(hasVideo ? "ビデオ通話" : "音声通話")")
 
             // ContactsServiceから連絡先を取得
             do {
                 print("🔧 CallManager: Fetching contact for callerId: \(callerId)...")
+                FileLogger.shared.log("Fetching contact for callerId: \(callerId)", category: "CallManager")
                 if let contact = try await ContactsService.shared.getContact(byId: callerId) {
                     self.currentContact = contact
                     print("✅ CallManager: Contact set: \(contact.displayName)")
+                    FileLogger.shared.log("✅ Contact set: \(contact.displayName)", category: "CallManager")
                 } else {
                     print("⚠️ CallManager: Contact not found, creating temporary contact")
+                    FileLogger.shared.log("⚠️ Contact not found, creating temporary contact", category: "CallManager")
                     // 連絡先が見つからない場合は一時的な連絡先を作成
                     self.currentContact = Contact(
                         id: callerId,
@@ -112,19 +142,55 @@ class CallManager: ObservableObject {
                     )
                 }
 
-                // APIからofferを取得
-                print("🔧 CallManager: Fetching offer from API for callId: \(callId)...")
-                if let offerSDP = try await APIService.shared.getOfferSDP(callId: callId) {
+                // Offerの取得（VoIP Pushに含まれていればそれを使用、なければAPIから取得）
+                var offerSDP: String? = offerFromPush
+                let maxRetries = 10  // 最大10回リトライ (約20秒)
+
+                if offerSDP != nil {
+                    print("✅ CallManager: Using offer from VoIP Push payload")
+                    FileLogger.shared.log("✅ Using offer from VoIP Push payload, length: \(offerSDP!.count)", category: "CallManager")
+                } else {
+                    // APIからofferを取得（リトライロジック追加）
+                    print("🔧 CallManager: Fetching offer from API for callId: \(callId)...")
+                    FileLogger.shared.log("Fetching offer from API for callId: \(callId)", category: "CallManager")
+
+                    let retryInterval: UInt64 = 2_000_000_000  // 2秒待機
+
+                    for attempt in 1...maxRetries {
+                        print("🔄 CallManager: Attempt \(attempt)/\(maxRetries) to fetch offer...")
+                        FileLogger.shared.log("🔄 Attempt \(attempt)/\(maxRetries) to fetch offer", category: "CallManager")
+
+                        offerSDP = try await APIService.shared.getOfferSDP(callId: callId)
+
+                        if offerSDP != nil {
+                            print("✅ CallManager: Offer retrieved on attempt \(attempt), length: \(offerSDP!.count)")
+                            FileLogger.shared.log("✅ Offer retrieved on attempt \(attempt), length: \(offerSDP!.count)", category: "CallManager")
+                            break
+                        }
+
+                        if attempt < maxRetries {
+                            print("⚠️ CallManager: Offer not found, waiting 2 seconds before retry...")
+                            FileLogger.shared.log("⚠️ Offer not found, waiting 2 seconds before retry (attempt \(attempt)/\(maxRetries))", category: "CallManager")
+                            try await Task.sleep(nanoseconds: retryInterval)  // 2秒待機
+                        }
+                    }
+                }
+
+                if let offerSDP = offerSDP {
                     self.incomingOffer = offerSDP
-                    print("✅ CallManager: Offer retrieved from API, length: \(offerSDP.count)")
+                    FileLogger.shared.log("Starting acceptIncomingCall()", category: "CallManager")
 
                     // acceptIncomingCall()を呼び出し
                     await self.acceptIncomingCall()
                 } else {
-                    print("❌ CallManager: No offer found in API for callId: \(callId)")
+                    print("❌ CallManager: No offer found after \(maxRetries) attempts for callId: \(callId)")
+                    print("❌ CallManager: Ending call due to missing offer")
+                    FileLogger.shared.log("❌ No offer found after \(maxRetries) attempts, ending call", category: "CallManager")
+                    await self.endCall()
                 }
             } catch {
                 print("❌ CallManager: Error setting up state: \(error)")
+                FileLogger.shared.log("❌ Error setting up state: \(error.localizedDescription)", category: "CallManager")
             }
         }
     }
@@ -166,17 +232,28 @@ class CallManager: ObservableObject {
     private func setupWebRTCCallbacks() {
         webRTCService.onIceCandidate = { [weak self] candidate in
             guard let self = self,
-                  let contact = self.currentContact else { return }
+                  let contact = self.currentContact else {
+                print("⚠️ CallManager: onIceCandidate - no self or contact")
+                FileLogger.shared.log("⚠️ onIceCandidate - no self or contact", category: "CallManager")
+                return
+            }
 
             let candidateDict: [String: Any] = [
                 "sdpMid": candidate.sdpMid ?? "",
-                "sdpMLineIndex": candidate.sdpMLineIndex,
+                "sdpMLineIndex": Int32(candidate.sdpMLineIndex),
                 "candidate": candidate.sdp
             ]
 
-            // Send ICE candidate via Socket.io
-            self.socketService.sendIceCandidate(to: contact.id, candidate: candidateDict)
-            print("✅ CallManager: Sent ICE candidate via Socket.io to user \(contact.id)")
+            // Add small delay before sending to allow batching of multiple candidates
+            // This helps iPhone 12 Pro collect all candidates before sending
+            Task {
+                try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms delay
+
+                // Send ICE candidate via Socket.io
+                self.socketService.sendIceCandidate(to: contact.id, candidate: candidateDict)
+                print("✅ CallManager: Sent ICE candidate via Socket.io to user \(contact.id)")
+                FileLogger.shared.log("✅ Sent ICE candidate to user \(contact.id), mid: \(candidate.sdpMid ?? "nil"), index: \(candidate.sdpMLineIndex)", category: "CallManager")
+            }
         }
 
         webRTCService.onConnected = { [weak self] in
@@ -186,6 +263,7 @@ class CallManager: ObservableObject {
                 print("🔔 CallManager: Current call state: \(String(describing: self?.callState))")
                 self?.callState = .connected
                 self?.startCallTimer()
+                self?.stopRingbackTone()  // 呼び出し音を停止
                 self?.isSettingUpCall = false  // セットアップ完了（ICE接続成功）
                 print("✅ CallManager: Call connected - setup complete")
             }
@@ -209,9 +287,12 @@ class CallManager: ObservableObject {
     @MainActor
     func startCall(to contact: Contact, isVideo: Bool) async {
         print("🔵 CallManager: Starting call to \(contact.displayName)")
+        FileLogger.shared.log("========== STARTING OUTGOING CALL ==========", category: "CallManager")
+        FileLogger.shared.log("🔵 Starting call to \(contact.displayName), isVideo: \(isVideo)", category: "CallManager")
 
         guard let currentUserId = AuthService.shared.currentUser?.id else {
             print("❌ CallManager: No current user")
+            FileLogger.shared.log("❌ No current user", category: "CallManager")
             return
         }
 
@@ -227,6 +308,7 @@ class CallManager: ObservableObject {
         self.callUUID = UUID()
         print("🔵 CallManager: Call ID: \(self.callId!)")
         print("🔵 CallManager: Call UUID: \(self.callUUID!)")
+        FileLogger.shared.log("🔵 Call ID: \(self.callId!), UUID: \(self.callUUID!)", category: "CallManager")
 
         // CallKitで発信を開始
         CallKitProvider.shared.startOutgoingCall(
@@ -236,40 +318,66 @@ class CallManager: ObservableObject {
             hasVideo: isVideo,
             callId: callId!
         )
+        FileLogger.shared.log("✅ CallKit outgoing call started", category: "CallManager")
 
-        // Configure audio (CallKitを使用時はCallKitが管理)
-        // audioManager.configureForCall()
+        // Configure audio session
+        print("🔊 CallManager: Configuring audio session for outgoing call...")
+        FileLogger.shared.log("🔊 Configuring audio session for outgoing call", category: "CallManager")
+        audioManager.configureForCall()
+        print("✅ CallManager: Audio session configured for outgoing call")
+        FileLogger.shared.log("✅ Audio session configured for outgoing call", category: "CallManager")
 
         // Setup WebRTC
         do {
+            FileLogger.shared.log("Step 1 - Setting up peer connection", category: "CallManager")
             try await setupPeerConnection()
+            FileLogger.shared.log("✅ Step 1 - Peer connection setup complete", category: "CallManager")
+
+            // Camera starts asynchronously in background - don't wait
+            // Proceed immediately to create offer for fast call setup
+            if isVideo {
+                print("ℹ️ CallManager: Video call - camera starting in background")
+                FileLogger.shared.log("ℹ️ Video call - camera starting in background", category: "CallManager")
+            }
 
             // Create offer
+            FileLogger.shared.log("Step 2 - Creating offer", category: "CallManager")
             let offer = try await webRTCService.createOffer(isVideo: isVideo)
+            FileLogger.shared.log("✅ Step 2 - Offer created, SDP length: \(offer.sdp.count)", category: "CallManager")
 
-            // Send offer via Socket.io
-            socketService.sendOffer(to: contact.id, sdp: offer.sdp)
-
-            // Also save offer to API (for fallback)
-            Task {
-                do {
-                    try await APIService.shared.sendSignal(
-                        callId: callId!,
-                        action: "offer",
-                        data: ["sdp": offer.sdp, "type": "offer"]
-                    )
-                    print("✅ CallManager: Offer also saved to API for callId: \(callId!)")
-                } catch {
-                    print("⚠️ CallManager: Failed to save offer to API - \(error)")
-                }
+            // CRITICAL: Save offer to API FIRST (before Socket.io)
+            // This ensures the offer is available when the callee answers via CallKit
+            FileLogger.shared.log("Step 3 - Saving offer to API", category: "CallManager")
+            do {
+                try await APIService.shared.sendSignal(
+                    callId: callId!,
+                    action: "offer",
+                    data: ["sdp": offer.sdp, "type": "offer"]
+                )
+                print("✅ CallManager: Offer saved to API for callId: \(callId!)")
+                FileLogger.shared.log("✅ Step 3 - Offer saved to API", category: "CallManager")
+            } catch {
+                print("❌ CallManager: CRITICAL - Failed to save offer to API - \(error)")
+                FileLogger.shared.log("❌ CRITICAL - Failed to save offer to API: \(error)", category: "CallManager")
+                // Continue anyway, Socket.io might still work
             }
+
+            // Send offer via Socket.io (for online callees)
+            // CRITICAL: Include callId and hasVideo for VoIP Push
+            FileLogger.shared.log("Step 4 - Sending offer via Socket.io with callId: \(callId!)", category: "CallManager")
+            socketService.sendOffer(to: contact.id, sdp: offer.sdp, callId: callId!, hasVideo: isVideo)
+            FileLogger.shared.log("✅ Step 4 - Offer sent via Socket.io", category: "CallManager")
 
             // Show call view
             self.showActiveCallView = true
 
+            // Start ringback tone (呼び出し音)
+            self.startRingbackTone()
+
             // Note: isSettingUpCallはonConnectedコールバックでfalseに設定される
 
             print("✅ CallManager: Offer sent via Socket.io to \(contact.displayName)")
+            FileLogger.shared.log("✅ ========== Outgoing call setup COMPLETE ==========", category: "CallManager")
 
             // Start polling for answer from API (fallback if Socket.IO doesn't deliver)
             Task {
@@ -289,6 +397,7 @@ class CallManager: ObservableObject {
             }
         } catch {
             print("❌ CallManager: Failed to start call - \(error)")
+            FileLogger.shared.log("❌ Failed to start call: \(error)", category: "CallManager")
             self.isSettingUpCall = false  // エラー時もフラグをクリア
             await endCall()
         }
@@ -398,6 +507,7 @@ class CallManager: ObservableObject {
         }
 
         stopCallTimer()
+        stopRingbackTone()  // 呼び出し音を停止
 
         callState = .ended
         showActiveCallView = false
@@ -456,12 +566,14 @@ class CallManager: ObservableObject {
     @MainActor
     func acceptIncomingCall() async {
         print("🔵 CallManager: ========== acceptIncomingCall() START ==========")
+        FileLogger.shared.log("========== acceptIncomingCall() START ==========", category: "CallManager")
         print("🔵 CallManager: incomingOffer exists: \(incomingOffer != nil)")
         print("🔵 CallManager: currentContact exists: \(currentContact != nil)")
 
         guard let offer = incomingOffer,
               let contact = currentContact else {
             print("❌ CallManager: Cannot accept call - missing offer or contact")
+            FileLogger.shared.log("❌ Cannot accept call - missing offer or contact", category: "CallManager")
             print("❌ CallManager: incomingOffer: \(String(describing: incomingOffer?.prefix(100)))")
             print("❌ CallManager: currentContact: \(String(describing: currentContact))")
             return
@@ -469,6 +581,7 @@ class CallManager: ObservableObject {
 
         print("🔵 CallManager: Accepting incoming call from \(contact.displayName)")
         print("🔵 CallManager: Offer SDP length: \(offer.count)")
+        FileLogger.shared.log("Accepting incoming call from \(contact.displayName), offer length: \(offer.count)", category: "CallManager")
 
         self.isSettingUpCall = true  // セットアップ開始
 
@@ -487,39 +600,90 @@ class CallManager: ObservableObject {
         callDirection = .incoming
         showActiveCallView = true
 
-        // Configure audio (CallKitを使用時はCallKitが管理)
-        // audioManager.configureForCall()
+        // Configure audio session
+        print("🔊 CallManager: Configuring audio session...")
+        FileLogger.shared.log("🔊 Configuring audio session", category: "CallManager")
+        audioManager.configureForCall()
+        print("✅ CallManager: Audio session configured")
+        FileLogger.shared.log("✅ Audio session configured", category: "CallManager")
 
         do {
             print("🔧 CallManager: Step 1 - Setting up peer connection...")
+            FileLogger.shared.log("Step 1 - Setting up peer connection", category: "CallManager")
             // Setup peer connection
             try await setupPeerConnection()
             print("✅ CallManager: Step 1 - Peer connection setup complete")
+            FileLogger.shared.log("✅ Step 1 - Peer connection setup complete", category: "CallManager")
 
             print("🔧 CallManager: Step 2 - Setting remote description (offer)...")
+            FileLogger.shared.log("Step 2 - Setting remote description (offer)", category: "CallManager")
             // Set remote description (offer)
             try await webRTCService.setRemoteDescription(sdp: offer, type: .offer)
             print("✅ CallManager: Step 2 - Remote description set")
+            FileLogger.shared.log("✅ Step 2 - Remote description set", category: "CallManager")
+
+            // Camera will start asynchronously in background
+            // Wait briefly for camera to start sending frames (critical for video ICE candidates)
+            if isVideoCall {
+                print("ℹ️ CallManager: Video call - waiting 0.5s for camera frames...")
+                FileLogger.shared.log("ℹ️ Video call - waiting 0.5s for camera frames", category: "CallManager")
+                try await Task.sleep(nanoseconds: 500_000_000)  // 500ms wait for camera frames
+                print("✅ CallManager: Camera wait complete, proceeding with answer")
+                FileLogger.shared.log("✅ Camera wait complete", category: "CallManager")
+            }
 
             print("🔧 CallManager: Step 3 - Creating answer...")
+            FileLogger.shared.log("Step 3 - Creating answer", category: "CallManager")
             // Create answer
             let answer = try await webRTCService.createAnswer(isVideo: isVideoCall)
             print("✅ CallManager: Step 3 - Answer created, SDP length: \(answer.sdp.count)")
+            FileLogger.shared.log("✅ Step 3 - Answer created, SDP length: \(answer.sdp.count)", category: "CallManager")
 
             print("🔧 CallManager: Step 4 - Sending answer via Socket.io...")
-            // Send answer via Socket.io (if connected)
-            socketService.sendAnswer(to: contact.id, sdp: answer.sdp)
-            print("✅ CallManager: Answer sent via Socket.io to user \(contact.id)")
+            print("🔍 CallManager: Socket.io connected: \(socketService.isConnected)")
+            FileLogger.shared.log("Step 4 - Socket.io connected: \(socketService.isConnected)", category: "CallManager")
 
-            // Also save answer to API (ensures delivery even if Socket.IO not connected yet)
+            // Socket.io接続待ち（最大3秒）
+            if !socketService.isConnected {
+                print("⚠️ CallManager: Socket.io not connected, waiting up to 3 seconds...")
+                FileLogger.shared.log("⚠️ Socket.io not connected, waiting up to 3 seconds", category: "CallManager")
+                var waitCount = 0
+                while !socketService.isConnected && waitCount < 30 {
+                    try await Task.sleep(nanoseconds: 100_000_000)  // 0.1秒
+                    waitCount += 1
+                }
+                print("🔍 CallManager: After waiting, Socket.io connected: \(socketService.isConnected)")
+                FileLogger.shared.log("After waiting, Socket.io connected: \(socketService.isConnected)", category: "CallManager")
+            }
+
+            // CRITICAL: Save answer to API FIRST before Socket.IO
+            // This ensures the caller can retrieve it via polling if Socket.IO fails
             if let myUserId = AuthService.shared.currentUser?.id,
                let callId = self.callId {
                 do {
-                    print("🔧 CallManager: Step 5 - Saving answer to API...")
+                    print("🔧 CallManager: Step 5 - Saving answer to API (priority delivery)...")
+                    FileLogger.shared.log("Step 5 - Saving answer to API (priority delivery)", category: "CallManager")
                     try await APIService.shared.saveAnswer(callId: callId, sdp: answer.sdp, from: myUserId, to: contact.id)
-                    print("✅ CallManager: Answer also saved to API for callId: \(callId)")
+                    print("✅ CallManager: Answer saved to API for callId: \(callId)")
+                    FileLogger.shared.log("✅ Answer saved to API for callId: \(callId)", category: "CallManager")
                 } catch {
                     print("⚠️ CallManager: Failed to save answer to API - \(error) (continuing anyway)")
+                    FileLogger.shared.log("⚠️ Failed to save answer to API: \(error.localizedDescription)", category: "CallManager")
+                }
+            }
+
+            // Then send via Socket.io (if connected) - this is fast but may fail if not connected yet
+            socketService.sendAnswer(to: contact.id, sdp: answer.sdp)
+            print("✅ CallManager: Answer sent via Socket.io to user \(contact.id) (connected: \(socketService.isConnected))")
+            FileLogger.shared.log("✅ Answer sent via Socket.io to user \(contact.id) (connected: \(socketService.isConnected))", category: "CallManager")
+
+            // Additional Socket.IO retry after 1 second to ensure delivery
+            Task {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)  // Wait 1 second
+                if self.socketService.isConnected {
+                    self.socketService.sendAnswer(to: contact.id, sdp: answer.sdp)
+                    print("✅ CallManager: Answer re-sent via Socket.io (retry) to user \(contact.id)")
+                    FileLogger.shared.log("✅ Answer re-sent via Socket.io (retry)", category: "CallManager")
                 }
             }
 
@@ -533,11 +697,13 @@ class CallManager: ObservableObject {
             // Note: isSettingUpCallはonConnectedコールバックでfalseに設定される（ICE接続成功まで待つ）
 
             print("✅ CallManager: ========== Incoming call accepted COMPLETE ==========")
+            FileLogger.shared.log("✅ ========== Incoming call accepted COMPLETE ==========", category: "CallManager")
         } catch {
             print("❌ CallManager: ========== FAILED to accept call ==========")
             print("❌ CallManager: Error type: \(type(of: error))")
             print("❌ CallManager: Error: \(error)")
             print("❌ CallManager: Error localizedDescription: \(error.localizedDescription)")
+            FileLogger.shared.log("❌ ========== FAILED to accept call: \(error.localizedDescription) ==========", category: "CallManager")
             self.isSettingUpCall = false  // エラー時もフラグをクリア
             await endCall()
         }
@@ -700,8 +866,12 @@ class CallManager: ObservableObject {
               let sdpMLineIndex = candidate["sdpMLineIndex"] as? Int32,
               let sdp = candidate["candidate"] as? String else {
             print("❌ CallManager: Invalid ICE candidate format")
+            FileLogger.shared.log("❌ Invalid ICE candidate format", category: "CallManager")
             return
         }
+
+        print("📥 CallManager: Received ICE candidate - mid: \(sdpMid), index: \(sdpMLineIndex)")
+        FileLogger.shared.log("📥 Received ICE candidate - mid: \(sdpMid), index: \(sdpMLineIndex)", category: "CallManager")
 
         let iceCandidate = RTCIceCandidate(
             sdp: sdp,
@@ -713,10 +883,12 @@ class CallManager: ObservableObject {
         // Otherwise, queue it for later
         if webRTCService.isReadyForCandidates {
             webRTCService.addIceCandidate(iceCandidate)
-            print("✅ CallManager: Added ICE candidate")
+            print("✅ CallManager: Added ICE candidate immediately")
+            FileLogger.shared.log("✅ Added ICE candidate immediately", category: "CallManager")
         } else {
             pendingIceCandidates.append(candidate)
-            print("⏳ CallManager: Queued ICE candidate")
+            print("⏳ CallManager: Queued ICE candidate (peer connection not ready)")
+            FileLogger.shared.log("⏳ Queued ICE candidate (peer connection not ready)", category: "CallManager")
         }
     }
 
@@ -737,6 +909,31 @@ class CallManager: ObservableObject {
         callTimer?.invalidate()
         callTimer = nil
         callStartTime = nil
+    }
+
+    // MARK: - Ringback Tone (呼び出し音)
+
+    private func startRingbackTone() {
+        print("🔔 CallManager: Starting ringback tone (呼び出し音)")
+
+        // 既存のタイマーを停止
+        stopRingbackTone()
+
+        // 1秒ごとに「ツー」という音を再生
+        ringbackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            // システム音 1016 = よりクリアな呼び出し音
+            // 他の選択肢: 1013(低音), 1014(中音), 1015(高音), 1016(クリア), 1050-1070(各種通知音)
+            AudioServicesPlaySystemSound(SystemSoundID(1014))
+        }
+
+        // 初回は即座に再生
+        AudioServicesPlaySystemSound(SystemSoundID(1016))
+    }
+
+    private func stopRingbackTone() {
+        ringbackTimer?.invalidate()
+        ringbackTimer = nil
+        print("🔕 CallManager: Stopped ringback tone")
     }
 
     // MARK: - Helper Methods

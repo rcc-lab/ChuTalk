@@ -28,10 +28,12 @@ class NotificationService: ObservableObject {
     private var processedCallIds = Set<String>() // 処理済みcallIdを記録
 
     private let processedCallIdsKey = "processedCallIds"
+    private let lastMessageIdKey = "lastNotifiedMessageId"  // 最後に通知したメッセージID
 
     private init() {
-        // UserDefaultsから処理済みcallIdsを読み込む
+        // UserDefaultsから処理済みcallIdsと最終メッセージIDを読み込む
         loadProcessedCallIds()
+        loadLastMessageId()
     }
 
     private func loadProcessedCallIds() {
@@ -45,15 +47,20 @@ class NotificationService: ObservableObject {
         UserDefaults.standard.set(Array(processedCallIds), forKey: processedCallIdsKey)
     }
 
+    private func loadLastMessageId() {
+        lastMessageId = UserDefaults.standard.integer(forKey: lastMessageIdKey)
+        print("📦 NotificationService: Loaded lastMessageId from UserDefaults: \(lastMessageId)")
+    }
+
+    private func saveLastMessageId() {
+        UserDefaults.standard.set(lastMessageId, forKey: lastMessageIdKey)
+        print("💾 NotificationService: Saved lastMessageId to UserDefaults: \(lastMessageId)")
+    }
+
     func startMonitoring(userId: Int) {
         print("✅ NotificationService: Starting monitoring for user \(userId)")
         print("✅ NotificationService: メッセージと着信のポーリングを開始します")
         stopMonitoring()
-
-        // 起動時に古いsignalをクリーンアップ
-        Task {
-            await cleanupOldSignals(userId: userId)
-        }
 
         // メッセージを2秒ごとにチェック
         messageTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -69,12 +76,10 @@ class NotificationService: ObservableObject {
             }
         }
 
-        // 初回チェックは5秒後に実行（クリーンアップが完了してから）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            Task {
-                guard let self = self else { return }
-                await self.checkIncomingCalls(userId: userId)
-            }
+        // 初回チェックは即座に実行
+        Task { [weak self] in
+            guard let self = self else { return }
+            await self.checkIncomingCalls(userId: userId)
         }
 
         print("✅ NotificationService: タイマー設定完了 - メッセージ: 2秒, 着信: 1秒")
@@ -133,6 +138,16 @@ class NotificationService: ObservableObject {
         callTimer = nil
     }
 
+    /// ログアウト時に呼び出して通知状態をリセット
+    func resetNotificationState() {
+        print("🔄 NotificationService: Resetting notification state")
+        lastMessageId = 0
+        saveLastMessageId()
+        hasNewMessage = false
+        newMessageFrom = nil
+        messageBody = nil
+    }
+
     private func checkNewMessages(userId: Int) async {
         // 全連絡先からの新着メッセージをチェック
         do {
@@ -153,6 +168,9 @@ class NotificationService: ObservableObject {
                         self.newMessageFrom = contact.displayName
                         self.messageBody = lastMessage.content
                         self.lastMessageId = serverId
+
+                        // UserDefaultsに保存（アプリ再起動後も重複通知しない）
+                        self.saveLastMessageId()
 
                         // メッセージ音を再生
                         AudioServicesPlaySystemSound(1007)

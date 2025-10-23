@@ -20,6 +20,7 @@ class AuthService: ObservableObject {
     }
 
     func checkAuthStatus() {
+        FileLogger.shared.log("checkAuthStatus() called", category: "AuthService")
         if let token = KeychainManager.shared.get(key: Constants.Keychain.authToken),
            let userIdString = KeychainManager.shared.get(key: Constants.Keychain.userId),
            let userId = Int(userIdString),
@@ -27,19 +28,23 @@ class AuthService: ObservableObject {
            let displayName = KeychainManager.shared.get(key: Constants.Keychain.displayName) {
 
             print("🔵 AuthService: Restoring auth state from keychain")
+            FileLogger.shared.log("Restoring auth state from keychain for user \(userId)", category: "AuthService")
             self.authToken = token
-            self.currentUser = User(id: userId, username: username, displayName: displayName)
+            self.currentUser = User(id: userId, username: username, displayName: displayName, profileImageUrl: nil)
             self.isAuthenticated = true
 
             // Connect to socket on startup
             print("🔵 AuthService: Connecting to socket server on startup")
+            FileLogger.shared.log("Connecting to socket server on startup", category: "AuthService")
             SocketService.shared.connect(userId: userId)
 
             // Re-upload device tokens after restoring auth state
             NotificationsService.shared.reuploadSavedTokens()
             print("✅ AuthService: Requested token reupload after restore")
+            FileLogger.shared.log("✅ Requested token reupload after restore", category: "AuthService")
         } else {
             print("🔵 AuthService: No saved credentials found")
+            FileLogger.shared.log("No saved credentials found", category: "AuthService")
             self.isAuthenticated = false
             self.currentUser = nil
             self.authToken = nil
@@ -74,7 +79,8 @@ class AuthService: ObservableObject {
         let user = User(
             id: payload.uid,
             username: payload.u,
-            displayName: payload.u // Use username as display name initially
+            displayName: payload.u, // Use username as display name initially
+            profileImageUrl: nil
         )
         print("✅ AuthService: User extracted from JWT - id:\(user.id), username:\(user.username)")
 
@@ -83,6 +89,7 @@ class AuthService: ObservableObject {
         try KeychainManager.shared.save(key: Constants.Keychain.userId, value: String(user.id))
         try KeychainManager.shared.save(key: Constants.Keychain.username, value: user.username)
         try KeychainManager.shared.save(key: Constants.Keychain.displayName, value: user.displayName)
+        try KeychainManager.shared.save(key: Constants.Keychain.password, value: password)  // 自動再ログイン用
         print("✅ AuthService: Credentials saved to keychain")
 
         // Update state
@@ -113,6 +120,14 @@ class AuthService: ObservableObject {
         try? KeychainManager.shared.deleteAll()
         print("✅ AuthService: Keychain cleared")
 
+        // Reset notification state (lastMessageIdなどをクリア)
+        NotificationService.shared.resetNotificationState()
+        print("✅ AuthService: Notification state reset")
+
+        // Clear app badge
+        MessagingService.shared.clearAppBadge()
+        print("✅ AuthService: App badge cleared")
+
         // Update state on main thread
         Task { @MainActor in
             self.authToken = nil
@@ -134,7 +149,7 @@ class AuthService: ObservableObject {
         // Set auth state
         await MainActor.run {
             self.authToken = token
-            self.currentUser = User(id: userId, username: username, displayName: displayName)
+            self.currentUser = User(id: userId, username: username, displayName: displayName, profileImageUrl: nil)
             self.isAuthenticated = true
         }
 
