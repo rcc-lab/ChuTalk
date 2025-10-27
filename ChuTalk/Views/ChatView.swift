@@ -31,6 +31,7 @@ struct ChatView: View {
     @State private var reportReason = ""
     @State private var showBlockAlert = false
     @State private var showReportSuccess = false
+    @State private var selectedMessageForReport: Message?
 
     // Computed property to get messages from MessagingService
     private var messages: [Message] {
@@ -49,8 +50,15 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
+                            MessageBubble(
+                                message: message,
+                                contact: contact,
+                                onReportMessage: { message in
+                                    selectedMessageForReport = message
+                                    showReportSheet = true
+                                }
+                            )
+                            .id(message.id)
                         }
                     }
                     .padding()
@@ -230,9 +238,15 @@ struct ChatView: View {
         .sheet(isPresented: $showReportSheet) {
             NavigationView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text("ユーザーを通報する理由を選択してください")
-                        .font(.headline)
-                        .padding(.horizontal)
+                    if selectedMessageForReport != nil {
+                        Text("このメッセージを通報する理由を選択してください")
+                            .font(.headline)
+                            .padding(.horizontal)
+                    } else {
+                        Text("ユーザーを通報する理由を選択してください")
+                            .font(.headline)
+                            .padding(.horizontal)
+                    }
 
                     List {
                         Button(action: { submitReport("不適切なメッセージ") }) {
@@ -255,12 +269,13 @@ struct ChatView: View {
                         }
                     }
                 }
-                .navigationTitle("ユーザーを通報")
+                .navigationTitle(selectedMessageForReport != nil ? "メッセージを通報" : "ユーザーを通報")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         Button("キャンセル") {
                             showReportSheet = false
+                            selectedMessageForReport = nil
                         }
                     }
                 }
@@ -354,11 +369,14 @@ struct ChatView: View {
 
     private func submitReport(_ reason: String) {
         showReportSheet = false
+        let messageId = selectedMessageForReport?.serverId
+        selectedMessageForReport = nil
+
         Task {
             do {
                 _ = try await APIService.shared.reportUser(
                     reportedUserId: contact.id,
-                    messageId: nil,
+                    messageId: messageId,
                     reason: reason
                 )
                 await MainActor.run {
@@ -514,6 +532,9 @@ struct VideoPicker: UIViewControllerRepresentable {
 
 struct MessageBubble: View {
     let message: Message
+    let contact: Contact
+    let onReportMessage: (Message) -> Void
+
     @State private var showSaveAlert = false
     @State private var saveSuccess = false
     @State private var showImageViewer = false
@@ -623,6 +644,12 @@ struct MessageBubble: View {
                                             }) {
                                                 Label("写真を保存", systemImage: "square.and.arrow.down")
                                             }
+
+                                            Button(action: {
+                                                onReportMessage(message)
+                                            }) {
+                                                Label("このメッセージを通報", systemImage: "exclamationmark.triangle")
+                                            }
                                         }
                                 case .failure:
                                     Image(systemName: "photo")
@@ -647,6 +674,13 @@ struct MessageBubble: View {
                             .foregroundColor(.primary)
                             .cornerRadius(16)
                             .frame(maxWidth: 260, alignment: .leading)
+                            .contextMenu {
+                                Button(action: {
+                                    onReportMessage(message)
+                                }) {
+                                    Label("このメッセージを通報", systemImage: "exclamationmark.triangle")
+                                }
+                            }
                     }
 
                     Text(formatTime(message.timestamp))
