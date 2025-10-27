@@ -120,21 +120,11 @@ struct ContentView: View {
         guard let userId = authService.currentUser?.id else { return }
 
         print("👤 ContentView: 現在のユーザーID: \(userId)")
-        print("🔍 ContentView: サービスを開始します")
+        print("🔍 ContentView: 着信監視を開始します")
 
-        // Socket.IO接続（リアルタイム通信）
-        print("🔌 ContentView: Socket.IO接続を開始")
-        SocketService.shared.connect(userId: userId)
-
-        // CallManagerでSocket.IO着信監視を設定
-        print("📞 ContentView: CallManager着信監視開始")
-        callManager.startListeningForIncomingCalls(userId: userId)
-
-        // NotificationServiceで着信とメッセージを監視（Socket.IO未接続時のフォールバック）
-        print("📱 ContentView: NotificationService開始（ポーリング）")
+        // NotificationServiceで着信とメッセージを監視
         notificationService.startMonitoring(userId: userId)
-
-        print("✅ ContentView: All services started for user \(userId)")
+        print("✅ ContentView: Started NotificationService monitoring for user \(userId)")
     }
 
     private func handleNewMessage(_ notification: Notification) {
